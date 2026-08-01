@@ -13,7 +13,8 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { Config } from "../src/config.js";
-import { convertRollout } from "../src/trace.js";
+import { convertRollout, toolObservationName } from "../src/trace.js";
+import type { ToolCall } from "../src/types.js";
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -67,6 +68,37 @@ beforeEach(() => {
   exporter.reset();
 });
 
+describe("toolObservationName", () => {
+  it("extracts shell commands from Codex code-mode wrappers", () => {
+    const call = {
+      callId: "call-1",
+      name: "exec_command",
+      args: 'const result = await tools.shell_command({command:"printf CODEX_FORK_BASH_OK",workdir:"/tmp"});',
+      startTime: 0,
+    } satisfies ToolCall;
+
+    expect(toolObservationName(call)).toBe("exec · printf CODEX_FORK_BASH_OK");
+
+    expect(
+      toolObservationName({
+        ...call,
+        args: 'const r = await tools.web__run({search_query:[{q:"Langfuse hook"}]});',
+      }),
+    ).toBe("web_search result · Langfuse hook");
+
+    expect(
+      toolObservationName({
+        ...call,
+        args: 'const r = await tools.mcp({tool:"time_get_current_time",args:{timezone:"Europe/London"}});',
+      }),
+    ).toBe("mcp · time_get_current_time");
+
+    expect(
+      toolObservationName({ ...call, args: "text(ALL_TOOLS.filter(x => /time/.test(x.name)))" }),
+    ).toBe("tool discovery");
+  });
+});
+
 describe("convertRollout", () => {
   it("emits an agent → generation → tool tree with backdated timestamps", async () => {
     const dir = stageFixtures();
@@ -101,7 +133,7 @@ describe("convertRollout", () => {
     // One tool span, nested under a generation, with the captured command output.
     const tools = spans.filter((s) => obsType(s) === "tool");
     expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe("exec_command");
+    expect(tools[0].name).toBe("exec · ls");
     expect(attr(tools[0], "langfuse.observation.metadata.codex.tool_name")).toBe("exec_command");
     expect(attr(tools[0], "langfuse.observation.output")).toContain("file1.txt");
     expect(generations.map((g) => g.spanContext().spanId)).toContain(parentId(tools[0]));
@@ -149,13 +181,16 @@ describe("convertRollout", () => {
       .filter((s) => obsType(s) === "tool")
       .map((s) => s.name)
       .sort();
-    // Call arguments (command, query) stay out of the name — they are the input.
-    expect(toolNames).toEqual(["linear.create_issue", "local_shell", "web_search"]);
+    expect(toolNames).toEqual([
+      "exec · bash -lc git status",
+      "linear.create_issue",
+      "web_search · langfuse codex plugin",
+    ]);
 
-    const webSearch = spans.find((s) => s.name === "web_search")!;
+    const webSearch = spans.find((s) => s.name.startsWith("web_search ·"))!;
     expect(attr(webSearch, "langfuse.observation.input")).toContain("langfuse codex plugin");
 
-    const shell = spans.find((s) => s.name === "local_shell")!;
+    const shell = spans.find((s) => s.name.startsWith("exec ·"))!;
     expect(attr(shell, "langfuse.observation.output")).toContain("clean");
   });
 

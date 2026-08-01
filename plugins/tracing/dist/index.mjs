@@ -47011,16 +47011,72 @@ function buildGenerationOutput(step, clip) {
 	}));
 	return Object.keys(output).length > 0 ? output : void 0;
 }
-/**
-* Observation name for a tool call. MCP calls use the clean `server.tool`
-* split from the mcp_tool_call_* events instead of the mangled function name;
-* everything else uses the plain tool name. Call arguments (shell command,
-* search query, …) stay out of the name — they belong to the observation
-* input.
-*/
+const TOOL_NAME_DETAIL_MAX_CHARS = 120;
+function compactToolDetail(value) {
+	let text;
+	if (typeof value === "string") text = value;
+	else if (Array.isArray(value) && value.every((item) => typeof item === "string")) text = value.join(" ");
+	if (!text) return void 0;
+	const compact = text.replace(/\s+/g, " ").trim();
+	if (!compact) return void 0;
+	return compact.length <= TOOL_NAME_DETAIL_MAX_CHARS ? compact : `${compact.slice(0, TOOL_NAME_DETAIL_MAX_CHARS - 1)}…`;
+}
+function embeddedStringField(value, fields) {
+	const fieldPattern = fields.join("|");
+	const match = value.match(/* @__PURE__ */ new RegExp(`\\b(?:${fieldPattern})\\s*:\\s*("(?:\\\\.|[^"\\\\])*")`));
+	if (!match) return void 0;
+	try {
+		return JSON.parse(match[1]);
+	} catch {
+		return;
+	}
+}
+function codeModeTool(value) {
+	if (typeof value !== "string") return void 0;
+	if (/\bALL_TOOLS\b/.test(value)) return { name: "tool discovery" };
+	const call = value.match(/\btools\.([A-Za-z0-9_]+)\s*\(/)?.[1];
+	if (!call) return void 0;
+	if (["shell_command", "exec_command"].includes(call)) return {
+		name: "exec",
+		detail: embeddedStringField(value, ["command", "cmd"])
+	};
+	if (call === "web__run" || call === "web_search") return {
+		name: "web_search result",
+		detail: embeddedStringField(value, ["q", "query"])
+	};
+	if (call === "mcp") return {
+		name: "mcp",
+		detail: embeddedStringField(value, [
+			"tool",
+			"describe",
+			"connect",
+			"search"
+		])
+	};
+	return { name: call.replaceAll("__", ".") };
+}
+function toolDetail(tc) {
+	const args = tc.args;
+	if (typeof args === "string") return compactToolDetail(args);
+	if (Array.isArray(args)) return compactToolDetail(args);
+	if (!args || typeof args !== "object") return void 0;
+	const record$1 = args;
+	const command = record$1.command ?? record$1.cmd;
+	const pathValue = record$1.path ?? record$1.file_path ?? record$1.filePath;
+	const query = record$1.query ?? record$1.search;
+	return compactToolDetail(command ?? pathValue ?? query);
+}
+/** Build a short, readable name while preserving full arguments as input. */
 function toolObservationName(tc) {
 	if (tc.mcp) return `${tc.mcp.server}.${tc.mcp.tool}`;
-	return tc.name || "tool";
+	const codeMode = codeModeTool(tc.args);
+	const canonical = codeMode?.name ?? ([
+		"local_shell",
+		"shell_command",
+		"exec_command"
+	].includes(tc.name) ? "exec" : tc.name || "tool");
+	const detail = codeMode ? compactToolDetail(codeMode.detail) : toolDetail(tc);
+	return detail ? `${canonical} · ${detail}` : canonical;
 }
 /** Emit a single turn (and its subagents) as a Langfuse observation tree. */
 async function emitTurn(turn, sessionMeta, ctx) {

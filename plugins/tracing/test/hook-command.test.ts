@@ -11,6 +11,7 @@ const hookConfigFile = path.join(repoRoot, "plugins/tracing/hooks/hooks.json");
 const bundleFile = path.join(repoRoot, "plugins/tracing/dist/index.mjs");
 const pluginManifestFile = path.join(repoRoot, "plugins/tracing/.codex-plugin/plugin.json");
 
+const marketplaceName = "langfuse-forks";
 const tmpDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
@@ -34,7 +35,7 @@ function readPluginVersion(): string {
 function stageInstalledPlugin(codexHome: string): void {
   const installedBundle = path.join(
     codexHome,
-    "plugins/cache/codex-observability-plugin/tracing/0.1.0/dist/index.mjs",
+    `plugins/cache/${marketplaceName}/tracing/0.1.0/dist/index.mjs`,
   );
   fs.mkdirSync(path.dirname(installedBundle), { recursive: true });
   fs.copyFileSync(bundleFile, installedBundle);
@@ -110,7 +111,7 @@ describe("bundled Stop hook command", () => {
 
   it("points at the installed cache path for this plugin version", () => {
     expect(readHookCommand()).toContain(
-      `/plugins/cache/codex-observability-plugin/tracing/${readPluginVersion()}/dist/index.mjs`,
+      `/plugins/cache/${marketplaceName}/tracing/${readPluginVersion()}/dist/index.mjs`,
     );
   });
 });
